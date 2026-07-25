@@ -1,9 +1,11 @@
 import Fastify, { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { BookingClient, FakeBookingClient } from "./bookings/client.js";
+import { FakeRecordingProvider, RecordingProvider } from "./recordings/retention-provider.js";
 import {
   Complaint,
   ComplaintOutcome,
   ComplaintsRepository,
+  ComplaintStatus,
   DuplicateComplaintError,
   InMemoryComplaintsRepository,
 } from "./recordings/complaints-repository.js";
@@ -17,12 +19,18 @@ interface ResolveComplaintBody {
   outcome?: string;
 }
 
+interface ListComplaintsQuery {
+  status?: string;
+}
+
 const VALID_OUTCOMES: ComplaintOutcome[] = ["upheld", "dismissed"];
+const VALID_STATUSES: ComplaintStatus[] = ["open", "resolved"];
 
 export function buildApp(
   complaintsRepository: ComplaintsRepository = new InMemoryComplaintsRepository(),
   bookingClient: BookingClient = new FakeBookingClient(),
   internalServiceToken: string | undefined = process.env.INTERNAL_SERVICE_TOKEN,
+  recordingProvider: RecordingProvider = new FakeRecordingProvider(),
 ): FastifyInstance {
   const app = Fastify({
     logger: process.env.NODE_ENV === "test" ? false : { level: process.env.LOG_LEVEL ?? "info" },
@@ -65,6 +73,17 @@ export function buildApp(
       return reply.code(401).send({ error: "missing X-User-Id header" });
     }
   });
+
+  // admin routes trust the gateway-forwarded role header, same as X-User-Id -- the gateway
+  // itself already rejects any /admin/ request without role: admin before it ever reaches here,
+  // this is defense-in-depth in case that route ever gets called some other way
+  function requireAdminRole(request: FastifyRequest, reply: FastifyReply): boolean {
+    if (request.headers["x-user-role"] !== "admin") {
+      reply.code(403).send({ error: "admin access required" });
+      return false;
+    }
+    return true;
+  }
 
   app.post<{ Body: CreateComplaintBody }>("/complaints", async (request, reply) => {
     const callerUserId = request.headers["x-user-id"] as string;
@@ -149,6 +168,69 @@ export function buildApp(
       return reply.send(resolved);
     },
   );
+
+  app.get<{ Querystring: ListComplaintsQuery }>("/admin/complaints", async (request, reply) => {
+    if (!requireAdminRole(request, reply)) return;
+
+    const { status } = request.query ?? {};
+    if (status !== undefined && !VALID_STATUSES.includes(status as ComplaintStatus)) {
+      return reply.code(400).send({ error: `status must be one of ${VALID_STATUSES.join(", ")}` });
+    }
+
+    const complaints = await complaintsRepository.listAll(status as ComplaintStatus | undefined);
+    return reply.send(complaints);
+  });
+
+  app.post<{ Params: { id: string }; Body: ResolveComplaintBody }>(
+    "/admin/complaints/:id/resolve",
+    async (request, reply) => {
+      if (!requireAdminRole(request, reply)) return;
+
+      const { outcome } = request.body ?? {};
+      if (typeof outcome !== "string" || !VALID_OUTCOMES.includes(outcome as ComplaintOutcome)) {
+        return reply.code(400).send({ error: `outcome must be one of ${VALID_OUTCOMES.join(", ")}` });
+      }
+
+      const existing = await complaintsRepository.getById(request.params.id);
+      if (!existing) {
+        return reply.code(404).send({ error: "complaint not found" });
+      }
+      if (existing.status === "resolved") {
+        return reply.code(409).send({ error: "complaint is already resolved" });
+      }
+
+      const resolved = await complaintsRepository.resolve(request.params.id, outcome as ComplaintOutcome);
+      request.log.info({ complaintId: request.params.id, outcome }, "complaint resolved by admin");
+      return reply.send(resolved);
+    },
+  );
+
+  app.get<{ Params: { id: string } }>("/admin/complaints/:id/recording", async (request, reply) => {
+    if (!requireAdminRole(request, reply)) return;
+
+    const complaint = await complaintsRepository.getById(request.params.id);
+    if (!complaint) {
+      return reply.code(404).send({ error: "complaint not found" });
+    }
+
+    const booking = await bookingClient.getBookingAsAdmin(complaint.bookingId);
+    if (!booking || !booking.providerRoomId) {
+      return reply.code(404).send({ error: "no meeting room on record for this booking" });
+    }
+
+    let url: string | null;
+    try {
+      url = await recordingProvider.getAccessLinkForRoom(booking.providerRoomId);
+    } catch (err) {
+      request.log.error({ err, complaintId: complaint.id }, "failed to fetch recording access link");
+      return reply.code(502).send({ error: "couldn't fetch the recording right now, try again" });
+    }
+
+    if (!url) {
+      return reply.code(404).send({ error: "no recording available -- it may already have been deleted" });
+    }
+    return reply.send({ url });
+  });
 
   return app;
 }

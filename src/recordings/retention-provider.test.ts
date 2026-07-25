@@ -65,4 +65,48 @@ describe("DailyRecordingProvider", () => {
     const provider = new DailyRecordingProvider();
     await expect(provider.listRecordings()).rejects.toThrow(/DAILY_API_KEY/);
   });
+
+  it("getAccessLinkForRoom looks up the recording by room then fetches its access link", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: [{ id: "rec-1" }] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ download_link: "https://daily.example/rec-1" }) });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const provider = new DailyRecordingProvider();
+    const url = await provider.getAccessLinkForRoom("room-1");
+
+    expect(url).toBe("https://daily.example/rec-1");
+    expect(fetchMock.mock.calls[0][0]).toContain("room_name=room-1");
+    expect(fetchMock.mock.calls[1][0]).toContain("/recordings/rec-1/access-link");
+  });
+
+  it("getAccessLinkForRoom returns null when no recording exists for that room", async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: [] }) }) as unknown as typeof fetch;
+
+    const provider = new DailyRecordingProvider();
+    expect(await provider.getAccessLinkForRoom("room-1")).toBeNull();
+  });
+
+  it("getAccessLinkForRoom throws with Daily's error body on a non-ok list response", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: async () => '{"error":"unauthorized"}',
+    }) as unknown as typeof fetch;
+
+    const provider = new DailyRecordingProvider();
+    await expect(provider.getAccessLinkForRoom("room-1")).rejects.toThrow(/daily list recordings failed: 401/);
+  });
+
+  it("getAccessLinkForRoom throws with Daily's error body on a non-ok access-link response", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: [{ id: "rec-1" }] }) })
+      .mockResolvedValueOnce({ ok: false, status: 404, text: async () => '{"error":"not-found"}' });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const provider = new DailyRecordingProvider();
+    await expect(provider.getAccessLinkForRoom("room-1")).rejects.toThrow(/daily get access-link failed: 404/);
+  });
 });

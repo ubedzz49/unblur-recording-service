@@ -3,6 +3,7 @@ import {
   Complaint,
   ComplaintOutcome,
   ComplaintsRepository,
+  ComplaintStatus,
   CreateComplaintInput,
   DuplicateComplaintError,
 } from "./complaints-repository.js";
@@ -67,6 +68,13 @@ export class PostgresComplaintsRepository implements ComplaintsRepository {
       [id, outcome],
     );
     return rows[0] ? toComplaint(rows[0]) : null;
+  }
+
+  async listAll(status?: ComplaintStatus): Promise<Complaint[]> {
+    const { rows } = status
+      ? await this.pool.query<ComplaintRow>("SELECT * FROM complaints WHERE status = $1 ORDER BY created_at DESC", [status])
+      : await this.pool.query<ComplaintRow>("SELECT * FROM complaints ORDER BY created_at DESC");
+    return rows.map(toComplaint);
   }
 }
 
