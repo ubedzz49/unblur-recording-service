@@ -32,6 +32,8 @@ export interface ComplaintsRepository {
   getByBookingId(bookingId: string): Promise<Complaint | null>;
   getById(id: string): Promise<Complaint | null>;
   resolve(id: string, outcome: ComplaintOutcome): Promise<Complaint | null>;
+  // admin-only
+  listAll(status?: ComplaintStatus): Promise<Complaint[]>;
 }
 
 // test-only -- avoids CI needing real Postgres
@@ -73,5 +75,11 @@ export class InMemoryComplaintsRepository implements ComplaintsRepository {
     const updated: Complaint = { ...existing, status: "resolved", outcome, resolvedAt: new Date().toISOString() };
     this.complaints.set(id, updated);
     return updated;
+  }
+
+  async listAll(status?: ComplaintStatus): Promise<Complaint[]> {
+    return Array.from(this.complaints.values())
+      .filter((c) => (status ? c.status === status : true))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 }

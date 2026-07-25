@@ -18,19 +18,21 @@ if (!process.env.INTERNAL_SERVICE_TOKEN) {
 }
 
 const dbPool = buildDbPool();
+const complaintsRepository = new PostgresComplaintsRepository(dbPool);
 
 runMigrations(dbPool)
   .then(() => {
     const app = buildApp(
-      new PostgresComplaintsRepository(dbPool),
+      complaintsRepository,
       new HttpBookingClient(),
       process.env.INTERNAL_SERVICE_TOKEN,
+      new DailyRecordingProvider(),
     );
 
     // only runs against real Daily.co if a key is configured -- keeps local/test boot working
     // without one, same as meeting-service's DailyVideoProvider only being reached at call time
     if (process.env.DAILY_API_KEY) {
-      startRetentionSweeper(new DailyRecordingProvider(), retentionMins);
+      startRetentionSweeper(new DailyRecordingProvider(), complaintsRepository, retentionMins);
     } else {
       logger.warn("DAILY_API_KEY not set, recording retention sweep disabled");
     }
