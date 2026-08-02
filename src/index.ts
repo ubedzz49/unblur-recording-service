@@ -5,6 +5,7 @@ import { PostgresComplaintsRepository } from "./recordings/postgres-complaints-r
 import { HttpBookingClient } from "./bookings/client.js";
 import { DailyRecordingProvider } from "./recordings/retention-provider.js";
 import { startRetentionSweeper } from "./recordings/retention-sweep.js";
+import { HttpAuditLogClient } from "./admin/audit-log-client.js";
 import { logger } from "./logger.js";
 
 const port = Number(process.env.PORT ?? 3009);
@@ -27,6 +28,7 @@ runMigrations(dbPool)
       new HttpBookingClient(),
       process.env.INTERNAL_SERVICE_TOKEN,
       new DailyRecordingProvider(),
+      new HttpAuditLogClient(),
     );
 
     // only runs against real Daily.co if a key is configured -- keeps local/test boot working

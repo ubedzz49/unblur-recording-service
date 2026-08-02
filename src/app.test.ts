@@ -3,6 +3,7 @@ import { buildApp } from "./app.js";
 import { InMemoryComplaintsRepository } from "./recordings/complaints-repository.js";
 import { FakeBookingClient } from "./bookings/client.js";
 import { FakeRecordingProvider } from "./recordings/retention-provider.js";
+import { FakeAuditLogClient } from "./admin/audit-log-client.js";
 
 const INTERNAL_TOKEN = "test-internal-token";
 const POSTER = "11111111-1111-1111-1111-111111111111";
@@ -22,8 +23,9 @@ function setup(bookingStatus = "completed") {
     providerRoomId: PROVIDER_ROOM_ID,
   });
   const recordingProvider = new FakeRecordingProvider();
-  const app = buildApp(repo, bookingClient, INTERNAL_TOKEN, recordingProvider);
-  return { app, repo, bookingClient, recordingProvider };
+  const auditLogClient = new FakeAuditLogClient();
+  const app = buildApp(repo, bookingClient, INTERNAL_TOKEN, recordingProvider, auditLogClient);
+  return { app, repo, bookingClient, recordingProvider, auditLogClient };
 }
 
 function fileComplaint(app: ReturnType<typeof buildApp>, userId = POSTER, body: Record<string, unknown> = { bookingId: BOOKING_ID, reason: "resolver left after 2 minutes" }) {
@@ -296,18 +298,32 @@ describe("POST /admin/complaints/:id/resolve", () => {
     expect(res.statusCode).toBe(403);
   });
 
-  it("resolves a complaint as an admin", async () => {
-    const { app } = setup();
+  it("resolves a complaint as an admin and records an audit entry", async () => {
+    const { app, auditLogClient } = setup();
     const filed = await fileComplaint(app);
     const res = await app.inject({
       method: "POST",
       url: `/admin/complaints/${filed.json().id}/resolve`,
-      headers: { "x-user-id": "admin", "x-user-role": "admin" },
+      headers: { "x-user-id": "admin", "x-user-role": "admin", "x-user-username": "boss" },
       payload: { outcome: "upheld" },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().status).toBe("resolved");
     expect(res.json().outcome).toBe("upheld");
+    expect(auditLogClient.calls).toHaveLength(1);
+    expect(auditLogClient.calls[0]).toMatchObject({ action: "resolve_complaint", adminUsername: "boss" });
+  });
+
+  it("allows a superadmin caller, not just admin", async () => {
+    const { app } = setup();
+    const filed = await fileComplaint(app);
+    const res = await app.inject({
+      method: "POST",
+      url: `/admin/complaints/${filed.json().id}/resolve`,
+      headers: { "x-user-id": "super-1", "x-user-role": "superadmin" },
+      payload: { outcome: "dismissed" },
+    });
+    expect(res.statusCode).toBe(200);
   });
 
   it("404s an unknown complaint", async () => {
