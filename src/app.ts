@@ -10,6 +10,7 @@ import {
   DuplicateComplaintError,
   InMemoryComplaintsRepository,
 } from "./recordings/complaints-repository.js";
+import { AuditLogClient, FakeAuditLogClient } from "./admin/audit-log-client.js";
 
 interface CreateComplaintBody {
   bookingId?: string;
@@ -32,6 +33,7 @@ export function buildApp(
   bookingClient: BookingClient = new FakeBookingClient(),
   internalServiceToken: string | undefined = process.env.INTERNAL_SERVICE_TOKEN,
   recordingProvider: RecordingProvider = new FakeRecordingProvider(),
+  auditLogClient: AuditLogClient = new FakeAuditLogClient(),
 ): FastifyInstance {
   const app = Fastify(
     process.env.NODE_ENV === "test"
@@ -100,7 +102,8 @@ export function buildApp(
   // itself already rejects any /admin/ request without role: admin before it ever reaches here,
   // this is defense-in-depth in case that route ever gets called some other way
   function requireAdminRole(request: FastifyRequest, reply: FastifyReply): boolean {
-    if (request.headers["x-user-role"] !== "admin") {
+    const role = request.headers["x-user-role"];
+    if (role !== "admin" && role !== "superadmin") {
       reply.code(403).send({ error: "admin access required" });
       return false;
     }
@@ -222,6 +225,14 @@ export function buildApp(
       }
 
       const resolved = await complaintsRepository.resolve(request.params.id, outcome as ComplaintOutcome);
+      await auditLogClient.record({
+        adminUserId: (request.headers["x-user-id"] as string) ?? "unknown",
+        adminUsername: (request.headers["x-user-username"] as string) ?? "unknown",
+        action: "resolve_complaint",
+        targetType: "complaint",
+        targetId: request.params.id,
+        metadata: { outcome, bookingId: existing.bookingId },
+      });
       request.log.info({ complaintId: request.params.id, outcome }, "complaint resolved by admin");
       return reply.send(resolved);
     },
